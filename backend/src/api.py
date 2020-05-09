@@ -7,115 +7,166 @@ from flask_cors import CORS
 from .database.models import db_drop_and_create_all, setup_db, Drink
 from .auth.auth import AuthError, requires_auth
 
+#----------------------------------------------------------------------------#
+# App Setup
+#----------------------------------------------------------------------------#
 app = Flask(__name__)
 setup_db(app)
 CORS(app)
-
-'''
-@TODO uncomment the following line to initialize the datbase
-!! NOTE THIS WILL DROP ALL RECORDS AND START YOUR DB FROM SCRATCH
-!! NOTE THIS MUST BE UNCOMMENTED ON FIRST RUN
-'''
 db_drop_and_create_all()
 
-## ROUTES
-@app.route('/drinks')
-def get_drinks_representation():
-    drinks=Drink.query.all()
-    drinks_short=[drink.short() for drink in drinks]
-    return jsonify({'success': True, 'drinks': drinks_short}), 200
+#----------------------------------------------------------------------------#
+# Custom Functions
+#----------------------------------------------------------------------------#
+
+def get_error_message(error, default_text):
+    try:
+        # Return message contained in error, if possible
+        return error['description']
+    except TypeError:
+        # otherwise, return given default text
+        return default_text
+
+def get_all_drinks(recipe_format):
+    # Get all drinks in database
+    all_drinks = Drink.query.order_by(Drink.id).all()
+    # Format with different recipe detail level
+    if recipe_format.lower() == 'short':
+        all_drinks_formatted = [drink.short() for drink in all_drinks]
+    elif recipe_format.lower() == 'long':
+        all_drinks_formatted = [drink.long() for drink in all_drinks]
+    else:
+        return abort(500, {'message': 'bad formatted function call. recipe_format needs to be "short" or "long".'})
+
+    if len(all_drinks_formatted) == 0:
+        abort(404, {'message': 'no drinks found in database.'})
+    
+    # Return formatted list of drinks
+    return all_drinks_formatted
+
+#----------------------------------------------------------------------------#
+# Endpoints
+#----------------------------------------------------------------------------#
+
+@app.route('/drinks' , methods=['GET'])
+def drinks():
+    """Returns all drinks"""
+    return jsonify({
+    'success': True,
+    'drinks': get_all_drinks('short')
+    })
+
+@app.route('/drinks-detail',  methods=['GET'])
+@requires_auth('get:drinks-detail')
+def drinks_detail(payload):
+    """Returns all drinks with detailed recipe information"""
+    return jsonify({
+    'success': True,
+    'drinks': get_all_drinks('long')
+    })
 
 
-
-@app.route('/drinks-detail')
-@requires_auth(permission='get:drinks-detail')
-def get_drinks_detail(permission):
-    drinks=Drink.query.all()
-    drinks_long=[drink.long() for drink in drinks]
-    return jsonify({'success':True, 'drinks': drinks_long}), 200
-
-
-@app.route('/drinks', methods=['POST'])
-@requires_auth(permission='post:drinks')
-def add_new_drink(permission):
-    title = request.json.get('title')
-    recipe=request.json.get('recipe')
-    if not recipe or not title:
-        abort(400)
-    recipe_string = str(recipe).replace("\'", "\"")
-    new_drink=Drink(title=title,recipe=recipe_string)
+@app.route('/drinks',  methods=['POST'])
+@requires_auth('post:drinks')
+def create_drink(payload):
+    """Creates new drink and returns it to client"""
+    
+    body = request.get_json()
+    new_drink = Drink(title = body['title'], recipe = """{}""".format(body['recipe']))
+    
     new_drink.insert()
-    drink=[new_drink.long()]
-    return jsonify({'success': True, 'drinks':drink}), 200
+    new_drink.recipe = body['recipe']
+    return jsonify({
+    'success': True,
+    'drinks': Drink.long(new_drink)
+    })
 
+    
+@app.route('/drinks/<int:drink_id>',  methods=['PATCH'])
+@requires_auth('patch:drinks')
+def update_drink(payload, drink_id):
+    """Updates existing drink and returns it to client"""
+    
+    # Get body from request
+    body = request.get_json()
 
-@app.route('/drinks/<int:drink_id>', methods=['PATCH'])
-@requires_auth(permission='patch:drinks')
-def modify_drink(permission, drink_id):
-    drink=Drink.query.filter(Drink.id==drink_id).one_or_none()
-    if not drink:
-        abort(404)
-    title=request.json.get('title')
-    if title:
-        drink.title=title
-    recipe=request.json.get('recipe')
-    if recipe:
-        recipe_string = str(recipe).replace("\'", "\"")
-        drink.recipe=recipe_string
-    drink.update()
-    return jsonify({'success': True, 'drinks':[drink.long()]}), 200
+    if not body:
+      abort(400, {'message': 'request does not contain a valid JSON body.'})
+    
+    # Find drink which should be updated by id
+    drink_to_update = Drink.query.filter(Drink.id == drink_id).one_or_none()
 
-@app.route('/drinks/<int:drink_id>', methods=['DELETE'])
-@requires_auth(permission='delete:drinks')
-def delete_drink(permission, drink_id):
-    drink_to_delete=Drink.query.filter(Drink.id == drink_id).one_or_none()
+    # Check if and which fields should be updated
+    updated_title = body.get('title', None)
+    updated_recipe = body.get('recipe', None)
+    
+    # Depending on which fields are available, make apropiate updates
+    if updated_title:
+        drink_to_update.title = body['title']
+    
+    if updated_recipe:
+        drink_to_update.recipe = """{}""".format(body['recipe'])
+    
+    drink_to_update.update()
+
+    return jsonify({
+    'success': True,
+    'drinks': [Drink.long(drink_to_update)]
+    })
+
+@app.route('/drinks/<int:drink_id>',  methods=['DELETE'])
+@requires_auth('delete:drinks')
+def delete_drinks(payload, drink_id):
+    """Deletes 1 drink with given id"""
+    if not drink_id:
+        abort(422, {'message': 'Please provide valid drink id'})
+
+    # Get drink with id
+    drink_to_delete = Drink.query.filter(Drink.id == drink_id).one_or_none()
+
     if not drink_to_delete:
-        abort(404)
+        abort(404, {'message': 'Drink with id {} not found in database.'.format(drink_id)})
+     
     drink_to_delete.delete()
-    return jsonify({'success':True,'delete': drink_id}), 200
+    
+    return jsonify({
+    'success': True,
+    'delete': drink_id
+    })
 
-
-## Error Handling
-'''
-Example error handling for unprocessable entity
-'''
+#----------------------------------------------------------------------------#
+# Error Handlers
+#----------------------------------------------------------------------------#
 @app.errorhandler(422)
 def unprocessable(error):
     return jsonify({
                     "success": False, 
                     "error": 422,
-                    "message": "unprocessable"
+                    "message": get_error_message(error,"unprocessable")
                     }), 422
 
-@app.errorhandler(404)
-def not_found(error):
+@app.errorhandler(400)
+def bad_request(error):
     return jsonify({
-                    "success": False,
-                    'error': 404,
-                    'message': "resource not found"
+                    "success": False, 
+                    "error": 400,
+                    "message": get_error_message(error, "resource not found")
+                    }), 400
+
+
+@app.errorhandler(404)
+def ressource_not_found(error):
+    return jsonify({
+                    "success": False, 
+                    "error": 404,
+                    "message": get_error_message(error, "resource not found")
                     }), 404
 
 
 @app.errorhandler(AuthError)
-def authorization_failed(error):
+def authentification_failed(AuthError): 
     return jsonify({
-                    "success": False,
-                    'error': error.status_code,
-                    'message': error.error['description'] 
-                    }), error.status_code
-
-
-@app.errorhandler(500)
-def internal_server_error(error):
-    return jsonify({'success': False,
-                    'error': 500,
-                    'message': 'internal server error'
-                    }), 500 
-
-
-@app.errorhandler(400)
-def bad_request(error):
-    return jsonify({'success': False,
-                    'error':400,
-                    'message': 'bad request'
-                    }), 400
+                    "success": False, 
+                    "error": AuthError.status_code,
+                    "message": get_error_message(AuthError.error, "authentification fails")
+                    }), 401
