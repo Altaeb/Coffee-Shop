@@ -40,6 +40,8 @@ def get_drinks_detail(permission):
 def add_new_drink(permission):
     title = request.json.get('title')
     recipe=request.json.get('recipe')
+    if not recipe or not title:
+        abort(400)
     recipe_string = str(recipe).replace("\'", "\"")
     new_drink=Drink(title=title,recipe=recipe_string)
     new_drink.insert()
@@ -109,3 +111,11 @@ def internal_server_error(error):
                     'error': 500,
                     'message': 'internal server error'
                     }), 500 
+
+
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({'success': False,
+                    'error':400,
+                    'message': 'bad request'
+                    }), 400
